@@ -20,6 +20,7 @@ const https = require('https');
     // monkey patch on non-API requests
     if (!reqOptions.hostname.includes(API_HOST)) {
       const chunks = [];
+      // https://github.com/nodejs/node/blob/master/lib/_http_outgoing.js
       clientRequest.write = function (data) {
         chunks.push(data);
         return __outgoingWrite.apply(this, arguments);
