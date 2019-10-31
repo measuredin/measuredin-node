@@ -23,6 +23,10 @@ const DEFAULT_PII_MATCHERS = {
 const RESOLVED_PII_RECORDS = {};
 const PENDING_PII_RECORDS = {};
 
+function flush(q) {
+  Promise.all(q.splice(0, q.length));
+}
+
 function identifyPII(data) {
   const matches = {};
 
@@ -113,16 +117,24 @@ function findOrInsertPath(host, path) {
   return pendingPaths[path] = {};
 }
 
-function enqueue(agent, options, data) {
-  const { hostname, path } = options
-  const record = findOrInsertPath(hostname, path);
-  const pii = identifyPII(data);
-  Object.keys(pii).forEach((matched) => {
-    // initialize
-    record[matched] = record[matched] || {};
-    record[matched].lastSeen = +new Date();
-    record[matched].count = (record[matched].count || 0) + 1;
+function processRequest(agent, options, data) {
+  const { hostname, path } = options;
+  const job = new Promise(function (resolve, reject) {
+    try {
+      const record = findOrInsertPath(hostname, path);
+      const pii = Object.keys(identifyPII(data));
+      pii.forEach((matched) => {
+        // initialize
+        record[matched] = record[matched] || {};
+        record[matched].lastSeen = +new Date();
+        record[matched].count = (record[matched].count || 0) + 1;
+      });
+      resolve(pii.length);
+    } catch (err) {
+      reject(err);
+    }
   });
+  queue.push(job);
 }
 
 // http(s)
@@ -148,8 +160,8 @@ const https = require('https');
       }
       clientRequest.on('finish', function () {
         const data = Buffer.concat(chunks);
-        enqueue(clientAgent, reqOptions, data);
-      })
+        processRequest(clientAgent, reqOptions, data);
+      });
     }
     return clientRequest;
   };
