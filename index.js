@@ -23,9 +23,10 @@ function processRequest(agent, options, data) {
     try {
       const decoded = data.toString('utf8');
       const record = findOrInsertRequest(resolvedPIIRecords, pendingPIIRecords, hostname, path);
-      const pii = Object.keys(identifyPIIs(matcher, decoded));
-      const unknown = identifyUnknowns(defaultExclusions, pii, decoded);
+      const matches = identifyPIIs(matcher, decoded);
+      const unknown = identifyUnknowns(defaultExclusions, matches, decoded);
       // update record
+      const pii = Object.keys(matches);
       pii.forEach((matched) => {
         // initialize
         record[matched] = record[matched] || {};
