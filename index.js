@@ -2,15 +2,16 @@ const {
   DEFAULT_PII_MATCHERS : defaultMatcher,
   DEFAULT_EXCLUSION_MATCHERS: defaultExclusions,
   identifyPIIs, identifyUnknowns } = require('./lib/pii');
-const { findOrInsertRequest } = require('./lib/utils');
+const { findOrInsertRequest, addUnknownToSet } = require('./lib/utils');
 
 const API_HOST = 'measuredin.com'
 
 const queue = [];
-const unknowns = [];
+const unknownSet = {};
 
 const resolvedPIIRecords = {};
 const pendingPIIRecords = {};
+
 let matcher = defaultMatcher;
 
 function flush(q) {
@@ -33,8 +34,7 @@ function processRequest(agent, options, data) {
         record[matched].lastSeen = +new Date();
         record[matched].count = (record[matched].count || 0) + 1;
       });
-      // to be analyzed
-      unknowns.push(unknown);
+      addUnknownToSet(unknownSet, unknown);
       resolve(pii.length);
     } catch (err) {
       reject(err);
