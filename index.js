@@ -28,9 +28,10 @@ let localPending = {};
 let encryptionKey = '';
 
 async function flushTimer() {
+  clearTimeout(flushTimeoutId);
+  flushTimeoutId = undefined;
   await Promise.all(queue.splice(0, queue.length));
   await syncConfig();
-  flushTimeoutId = undefined;
 }
 
 function initialize() {
