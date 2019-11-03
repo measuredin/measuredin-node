@@ -1,11 +1,15 @@
+'use strict';
+
 const {
   DEFAULT_PII_MATCHERS : defaultMatcher,
   DEFAULT_EXCLUSION_MATCHERS: defaultExclusions,
   identifyPIIs, identifyUnknowns } = require('./lib/pii');
 const { findOrInsertRequest, addUnknownToSet } = require('./lib/utils');
+const { httpsRequest } = require('./lib/request');
 
 const API_HOST = 'measuredin.com'
 
+const initialized = false;
 const queue = [];
 const unknownSet = {};
 
@@ -16,6 +20,11 @@ let matcher = defaultMatcher;
 
 function flush(q) {
   Promise.all(q.splice(0, q.length));
+}
+
+function initialize() {
+  if (initialized) return;
+  // fetch from api resolved, exclusions, and matcher
 }
 
 function processRequest(agent, options, data) {
@@ -43,4 +52,4 @@ function processRequest(agent, options, data) {
   queue.push(job);
 }
 
-require('./lib/interceptor')(API_HOST, processRequest);
+require('./lib/interceptor')(API_HOST, processRequest, initialize);
