@@ -19,6 +19,7 @@ let localMatchers = defaultMatcher;
 let localExclusions = defaultExclusions;
 let localResolved = {};
 let localPending = {};
+let encryptionKey = '';
 
 function flush(q) {
   Promise.all(q.splice(0, q.length));
@@ -37,7 +38,7 @@ function initialize() {
 }
 
 function syncConfig(config) {
-  const { resolved, exclusions, matchers } = config;
+  const { resolved, exclusions, matchers, key } = config;
   // convert string to regex
   [matchers, exclusions].forEach((set) => {
     Object.keys(set).forEach((field) => {
@@ -55,6 +56,7 @@ function syncConfig(config) {
   localExclusions = exclusions;
   localResolved = resolved;
   localPending = {};
+  encryptionKey = key;
 }
 
 function processRequest(agent, options, data) {
