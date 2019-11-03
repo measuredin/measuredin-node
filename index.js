@@ -4,40 +4,70 @@ const {
   DEFAULT_PII_MATCHERS : defaultMatcher,
   DEFAULT_EXCLUSION_MATCHERS: defaultExclusions,
   identifyPIIs, identifyUnknowns } = require('./lib/pii');
-const { findOrInsertRequest, addUnknownToSet } = require('./lib/utils');
+const { findOrInsertRequest, addUnknownToSet, encryptWithKey } = require('./lib/utils');
 const { httpsRequest } = require('./lib/request');
+
+// flush on every 5 mins or 100 requests, whichever condition met first
+const FLUSH_INTERVAL = 300;
+const FLUSH_THRESHOLD = 100;
 
 const API_HOST = 'api.measuredin.com'
 const API_VERSION = 'v1'
+let API_KEY = '';
 
 const queue = [];
 
 let initialized = false;
-let unknownSet = {};
+let flushTimeoutId;
 
+let unknownSet = {};
 let localMatchers = defaultMatcher;
 let localExclusions = defaultExclusions;
 let localResolved = {};
 let localPending = {};
 let encryptionKey = '';
 
-function flush(q) {
-  Promise.all(q.splice(0, q.length));
+async function flushTimer() {
+  await Promise.all(queue.splice(0, queue.length));
+  await syncConfig();
+  flushTimeoutId = undefined;
 }
 
 function initialize() {
   if (initialized) return;
-  httpsRequest({
-    method: 'GET',
+  syncConfig(false);
+}
+
+async function syncConfig(refresh = true) {
+  // update
+  const req = {
+    method: 'POST',
     path: `/${API_VERSION}/config`,
     hostname: API_HOST,
-  }, (res) => {
-    syncConfig(res.body);
+    headers: {
+      'Authorization': `Bearer ${API_KEY}`,
+    },
+    body: {
+      resolved: localResolved,
+      pending: localPending,
+      unknowns: encryptWithKey(unknownSet, encryptionKey),
+    }
+  };
+  // fetch only
+  if (!refresh) {
     initialized = true;
+    delete req.body;
+    req.method = 'GET';
+  }
+  httpsRequest(req, (res) => {
+    loadConfig(res.body);
+    if (!flushTimeoutId) {
+      flushTimeoutId = setTimeout(flushTimer, FLUSH_INTERVAL * 1000);
+    }
   }, () => {}, () => {});
 }
 
-function syncConfig(config) {
+function loadConfig(config) {
   const { resolved, exclusions, matchers, key } = config;
   // convert string to regex
   [matchers, exclusions].forEach((set) => {
@@ -77,6 +107,7 @@ function processRequest(agent, options, data) {
       });
       addUnknownToSet(unknownSet, unknown);
       resolve(pii.length);
+      if (queue.length >= FLUSH_THRESHOLD) flushTimer();
     } catch (err) {
       reject(err);
     }
