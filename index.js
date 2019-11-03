@@ -7,16 +7,18 @@ const {
 const { findOrInsertRequest, addUnknownToSet } = require('./lib/utils');
 const { httpsRequest } = require('./lib/request');
 
-const API_HOST = 'measuredin.com'
+const API_HOST = 'api.measuredin.com'
+const API_VERSION = 'v1'
 
-const initialized = false;
 const queue = [];
-const unknownSet = {};
 
-const resolvedPIIRecords = {};
-const pendingPIIRecords = {};
+let initialized = false;
+let unknownSet = {};
 
-let matcher = defaultMatcher;
+let localMatchers = defaultMatcher;
+let localExclusions = defaultExclusions;
+let localResolved = {};
+let localPending = {};
 
 function flush(q) {
   Promise.all(q.splice(0, q.length));
@@ -24,7 +26,35 @@ function flush(q) {
 
 function initialize() {
   if (initialized) return;
-  // fetch from api resolved, exclusions, and matcher
+  httpsRequest({
+    method: 'GET',
+    path: `/${API_VERSION}/config`,
+    hostname: API_HOST,
+  }, (res) => {
+    syncConfig(res.body);
+    initialized = true;
+  }, () => {}, () => {});
+}
+
+function syncConfig(config) {
+  const { resolved, exclusions, matchers } = config;
+  // convert string to regex
+  [matchers, exclusions].forEach((set) => {
+    Object.keys(set).forEach((field) => {
+      set[field] = set[field].map((s) => new RegExp(s));
+    });
+  });
+  Object.keys(resolved).forEach((host) => {
+    const paths = resolved[host];
+    paths.forEach((path) => {
+      path.path = new RegExp(path.path);
+    })
+  });
+  // sync from remote
+  localMatchers = matchers;
+  localExclusions = exclusions;
+  localResolved = resolved;
+  localPending = {};
 }
 
 function processRequest(agent, options, data) {
@@ -32,9 +62,9 @@ function processRequest(agent, options, data) {
   const job = new Promise(function (resolve, reject) {
     try {
       const decoded = data.toString('utf8');
-      const record = findOrInsertRequest(resolvedPIIRecords, pendingPIIRecords, hostname, path);
-      const matches = identifyPIIs(matcher, decoded);
-      const unknown = identifyUnknowns(defaultExclusions, matches, decoded);
+      const record = findOrInsertRequest(localResolved, localPending, hostname, path);
+      const matches = identifyPIIs(localMatchers, decoded);
+      const unknown = identifyUnknowns(localExclusions, matches, decoded);
       // update record
       const pii = Object.keys(matches);
       pii.forEach((matched) => {
