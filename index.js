@@ -6,6 +6,7 @@ const {
 } = require('./lib/pii');
 const { encryptWithKey, parseConfigRegex, createRequestHandler } = require('./lib/utils');
 const { httpsRequest } = require('./lib/request');
+const { serverInterceptor, clientInterceptor } = require('./lib/interceptor');
 
 MeasuredIn.DEFAULT_EXCLUSION_MATCHERS = DEFAULT_EXCLUSION_MATCHERS;
 MeasuredIn.DEFAULT_PII_MATCHERS = DEFAULT_PII_MATCHERS;
@@ -21,15 +22,15 @@ function MeasuredIn(key) {
 
   if (!(this instanceof MeasuredIn)) {
     const instance = new MeasuredIn(key);
-    const requestHandler = createRequestHandler(
-      instance.localResolved,
-      instance.localPending,
-      instance.localMatchers,
-      instance.localExclusions,
-      instance.unknownSet,
-      instance.enqueueJob.bind(instance),
-    );
-    require('./lib/interceptor')(instance.apiHost, requestHandler, instance.initialize.bind(instance));
+
+    const requestCallback = instance.addToQueue.bind(instance);
+    const initCallback = instance.initialize.bind(instance);
+    const clientHandler = createRequestHandler(instance, 'client', requestCallback);
+    const serverHandler = createRequestHandler(instance, 'server', requestCallback);
+
+    clientInterceptor(instance.apiHost, clientHandler, initCallback);
+    serverInterceptor(serverHandler, initCallback);
+
     return instance;
   }
 
@@ -38,11 +39,9 @@ function MeasuredIn(key) {
   this.initialized = false;
   this.flushTimeoutId;
 
-  this.unknownSet = {};
-  this.localMatchers = MeasuredIn.DEFAULT_PII_MATCHERS;
-  this.localExclusions = MeasuredIn.DEFAULT_EXCLUSION_MATCHERS;
-  this.localResolved = {};
-  this.localPending = {};
+  this.client = this.defaultConfig();
+  this.server = this.defaultConfig();
+
   this.encryptionKey = '';
 
   this.apiHost = MeasuredIn.DEFAULT_API_HOST;
@@ -54,11 +53,20 @@ function MeasuredIn(key) {
 }
 
 MeasuredIn.prototype = {
+  defaultConfig() {
+    return {
+      unknowns: {},
+      matchers: MeasuredIn.DEFAULT_PII_MATCHERS,
+      exclusions: MeasuredIn.DEFAULT_EXCLUSION_MATCHERS,
+      resolved: {},
+      pending: {},
+    };
+  },
   initialize() {
     if (this.initialized) return;
     this.syncConfig(false);
   },
-  enqueueJob(job) {
+  addToQueue(job) {
     if (this.queue.length >= this.flushRequestThreshold) this.flushTimer();
     this.queue.push(job);
   },
@@ -70,6 +78,14 @@ MeasuredIn.prototype = {
   },
   async syncConfig(refresh = true) {
     // update
+    const encryptionKey = this.encryptionKey;
+    const requestBodyFor = function(entity) {
+      return {
+        resolved: entity.resolved,
+        pending: entity.pending,
+        unknowns: encryptWithKey(entity.unknowns, encryptionKey),
+      };
+    };
     const req = {
       method: 'POST',
       path: `/${this.apiVersion}/config`,
@@ -78,9 +94,8 @@ MeasuredIn.prototype = {
         'Authorization': `Bearer ${this.apiKey}`,
       },
       body: {
-        resolved: this.localResolved,
-        pending: this.localPending,
-        unknowns: encryptWithKey(this.unknownSet, this.encryptionKey),
+        client: requestBodyFor(this.client),
+        server: requestBodyFor(this.server),
       }
     };
     // fetch only
@@ -91,19 +106,27 @@ MeasuredIn.prototype = {
     }
     httpsRequest(req, (res) => {
       this.loadConfig(res.body);
+      this.encryptionKey = res.body.key;
       if (!this.flushTimeoutId) {
         this.flushTimeoutId = setTimeout(this.flushTimer.bind(this), this.flushIntervalSec * 1000);
       }
     }, () => { }, () => { });
   },
-  loadConfig(config) {
-    const { resolved, matchers, exclusions } = parseConfigRegex(config);
-    // sync from remote
-    this.localMatchers = matchers;
-    this.localExclusions = exclusions;
-    this.localResolved = resolved;
-    this.localPending = {};
-    this.encryptionKey = config.key;
+  loadConfig(res) {
+    const { client, server } = res;
+    // redirect references
+    // client
+    parseConfigRegex(client);
+    this.client.resolved = client.resolved;
+    this.client.matchers = client.matchers;
+    this.client.exclusions = client.exclusions;
+    this.client.pending = {};
+    // server
+    parseConfigRegex(server);
+    this.server.resolved = server.resolved;
+    this.server.matchers = server.matchers;
+    this.server.exclusions = server.exclusions;
+    this.server.pending = {};
   },
 };
 
