@@ -1,119 +1,111 @@
 'use strict';
 
 const {
-  DEFAULT_PII_MATCHERS : defaultMatcher,
-  DEFAULT_EXCLUSION_MATCHERS: defaultExclusions,
-  identifyPIIs, identifyUnknowns } = require('./lib/pii');
-const { findOrInsertRequest, addUnknownToSet, encryptWithKey } = require('./lib/utils');
+  DEFAULT_PII_MATCHERS,
+  DEFAULT_EXCLUSION_MATCHERS
+} = require('./lib/pii');
+const { encryptWithKey, parseConfigRegex, createRequestHandler } = require('./lib/utils');
 const { httpsRequest } = require('./lib/request');
 
+MeasuredIn.DEFAULT_EXCLUSION_MATCHERS = DEFAULT_EXCLUSION_MATCHERS;
+MeasuredIn.DEFAULT_PII_MATCHERS = DEFAULT_PII_MATCHERS;
+
 // flush on every 5 mins or 100 requests, whichever condition met first
-const FLUSH_INTERVAL = 300;
-const FLUSH_THRESHOLD = 100;
+MeasuredIn.DEFAULT_FLUSH_INTERVAL_SEC = 10;
+MeasuredIn.DEFAULT_FLUSH_REQUEST_THRESHOLD = 3;
 
-const API_HOST = 'api.measuredin.com'
-const API_VERSION = 'v1'
-let API_KEY = '';
+MeasuredIn.DEFAULT_API_HOST = 'api.measuredin.com';
+MeasuredIn.DEFAULT_API_VERSION = 'v1';
 
-const queue = [];
+function MeasuredIn(key) {
 
-let initialized = false;
-let flushTimeoutId;
-
-let unknownSet = {};
-let localMatchers = defaultMatcher;
-let localExclusions = defaultExclusions;
-let localResolved = {};
-let localPending = {};
-let encryptionKey = '';
-
-async function flushTimer() {
-  clearTimeout(flushTimeoutId);
-  flushTimeoutId = undefined;
-  await Promise.all(queue.splice(0, queue.length));
-  await syncConfig();
-}
-
-function initialize() {
-  if (initialized) return;
-  syncConfig(false);
-}
-
-async function syncConfig(refresh = true) {
-  // update
-  const req = {
-    method: 'POST',
-    path: `/${API_VERSION}/config`,
-    hostname: API_HOST,
-    headers: {
-      'Authorization': `Bearer ${API_KEY}`,
-    },
-    body: {
-      resolved: localResolved,
-      pending: localPending,
-      unknowns: encryptWithKey(unknownSet, encryptionKey),
-    }
-  };
-  // fetch only
-  if (!refresh) {
-    initialized = true;
-    delete req.body;
-    req.method = 'GET';
+  if (!(this instanceof MeasuredIn)) {
+    const instance = new MeasuredIn(key);
+    const requestHandler = createRequestHandler(
+      instance.localResolved,
+      instance.localPending,
+      instance.localMatchers,
+      instance.localExclusions,
+      instance.unknownSet,
+      instance.enqueueJob.bind(instance),
+    );
+    require('./lib/interceptor')(instance.apiHost, requestHandler, instance.initialize.bind(instance));
+    return instance;
   }
-  httpsRequest(req, (res) => {
-    loadConfig(res.body);
-    if (!flushTimeoutId) {
-      flushTimeoutId = setTimeout(flushTimer, FLUSH_INTERVAL * 1000);
+
+  this.queue = [];
+
+  this.initialized = false;
+  this.flushTimeoutId;
+
+  this.unknownSet = {};
+  this.localMatchers = MeasuredIn.DEFAULT_PII_MATCHERS;
+  this.localExclusions = MeasuredIn.DEFAULT_EXCLUSION_MATCHERS;
+  this.localResolved = {};
+  this.localPending = {};
+  this.encryptionKey = '';
+
+  this.apiHost = MeasuredIn.DEFAULT_API_HOST;
+  this.apiVersion = MeasuredIn.DEFAULT_API_VERSION;
+  this.apiKey = key;
+
+  this.flushRequestThreshold = MeasuredIn.DEFAULT_FLUSH_REQUEST_THRESHOLD;
+  this.flushIntervalSec = MeasuredIn.DEFAULT_FLUSH_INTERVAL_SEC;
+}
+
+MeasuredIn.prototype = {
+  initialize() {
+    if (this.initialized) return;
+    this.syncConfig(false);
+  },
+  enqueueJob(job) {
+    if (this.queue.length >= this.flushRequestThreshold) this.flushTimer();
+    this.queue.push(job);
+  },
+  async flushTimer() {
+    clearTimeout(this.flushTimeoutId);
+    this.flushTimeoutId = undefined;
+    await Promise.all(this.queue.splice(0, this.queue.length));
+    await this.syncConfig();
+  },
+  async syncConfig(refresh = true) {
+    // update
+    const req = {
+      method: 'POST',
+      path: `/${this.apiVersion}/config`,
+      hostname: this.apiHost,
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+      },
+      body: {
+        resolved: this.localResolved,
+        pending: this.localPending,
+        unknowns: encryptWithKey(this.unknownSet, this.encryptionKey),
+      }
+    };
+    // fetch only
+    if (!refresh) {
+      this.initialized = true;
+      delete req.body;
+      req.method = 'GET';
     }
-  }, () => {}, () => {});
-}
+    httpsRequest(req, (res) => {
+      this.loadConfig(res.body);
+      if (!this.flushTimeoutId) {
+        this.flushTimeoutId = setTimeout(this.flushTimer.bind(this), this.flushIntervalSec * 1000);
+      }
+    }, () => { }, () => { });
+  },
+  loadConfig(config) {
+    const { resolved, matchers, exclusions } = parseConfigRegex(config);
+    // sync from remote
+    this.localMatchers = matchers;
+    this.localExclusions = exclusions;
+    this.localResolved = resolved;
+    this.localPending = {};
+    this.encryptionKey = config.key;
+  },
+};
 
-function loadConfig(config) {
-  const { resolved, exclusions, matchers, key } = config;
-  // convert string to regex
-  [matchers, exclusions].forEach((set) => {
-    Object.keys(set).forEach((field) => {
-      set[field] = set[field].map((s) => new RegExp(s));
-    });
-  });
-  Object.keys(resolved).forEach((host) => {
-    const paths = resolved[host];
-    paths.forEach((path) => {
-      path.path = new RegExp(path.path);
-    })
-  });
-  // sync from remote
-  localMatchers = matchers;
-  localExclusions = exclusions;
-  localResolved = resolved;
-  localPending = {};
-  encryptionKey = key;
-}
-
-function processRequest(agent, options, data) {
-  const { hostname, path } = options;
-  const job = new Promise(function (resolve, reject) {
-    try {
-      const decoded = data.toString('utf8');
-      const record = findOrInsertRequest(localResolved, localPending, hostname, path);
-      const matches = identifyPIIs(localMatchers, decoded);
-      const unknown = identifyUnknowns(localExclusions, matches, decoded);
-      // update record
-      const pii = Object.keys(matches);
-      pii.forEach((matched) => {
-        // initialize
-        record[matched] = record[matched] || {};
-        record[matched].lastSeen = +new Date();
-        record[matched].count = (record[matched].count || 0) + 1;
-      });
-      addUnknownToSet(unknownSet, unknown);
-      resolve(pii.length);
-      if (queue.length >= FLUSH_THRESHOLD) flushTimer();
-    } catch (err) {
-      reject(err);
-    }
-  });
-  queue.push(job);
-}
-
-require('./lib/interceptor')(API_HOST, processRequest, initialize);
+module.exports = MeasuredIn;
+module.exports.MeasuredIn = MeasuredIn;
