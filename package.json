@@ -1,12 +1,21 @@
 {
   "name": "measuredin-node",
   "version": "1.0.0",
-  "description": "",
+  "description": "MeasuredIn API Wrapper",
+  "keywords": [
+    "measuredin",
+    "pii",
+    "api"
+  ],
+  "homepage": "https://github.com/measuredin/measuredin-node",
+  "author": "MeasuredIn <support@measuredin.com> (https://measuredin.com/)",
+  "contributors": [
+    "Fan Jin <fan@measuredin.com>"
+  ],
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "author": "fan@measuredin.com",
   "license": "ISC",
   "devDependencies": {
     "eslint": "^6.6.0"
