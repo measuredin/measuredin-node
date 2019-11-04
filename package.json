@@ -1,5 +1,5 @@
 {
-  "name": "measuredin-node",
+  "name": "measuredin",
   "version": "1.0.0",
   "description": "MeasuredIn API Wrapper",
   "keywords": [
@@ -12,6 +12,10 @@
   "contributors": [
     "Fan Jin <fan@measuredin.com>"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git://github.com:measuredin/measuredin-node.git"
+  },
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
